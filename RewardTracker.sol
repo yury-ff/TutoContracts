@@ -13,7 +13,7 @@ import "./interfaces/IRewardTracker.sol";
 import "./interfaces/IERC20Permit.sol";
 
 
-contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker, Ownable {
+contract RewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IRewardTracker, Ownable {
     using SafeMath for uint256;
    
 
@@ -26,7 +26,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
     bool public stableRewardSystem;
 
     mapping(address => uint256) public totalDepositSupply;
-    mapping(address => uint256) public balances;
+    mapping(address => uint256) public balance;
     mapping(address => mapping(address => uint256)) public allowances;
     mapping(address => uint256) public override stakedAmounts;
     mapping(address => uint256) public claimableReward;
@@ -43,7 +43,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
     uint256 public override totalSupply;
     uint256 public cumulativeRewardPerToken;
 
-    event Claim(address receiver, uint256 amount);
+    event Claim(address account, uint256 amount);
     event TokensPerIntervalChange(uint256 amount);
 
     constructor(address _initialOwner, string memory _name, string memory _symbol, address _handler) Ownable(_initialOwner) {
@@ -83,12 +83,6 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         isHandler[_handler] = _isActive;
     }
 
-    function balanceOf(
-        address _account
-    ) external view override returns (uint256) {
-        return balances[_account];
-    }
-
     function stakeWithPermit(
         uint256 _permitAmount,
         uint256 _amount,
@@ -98,25 +92,23 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         bytes32 s
     ) external nonReentrant {
         IERC20Permit(depositToken).permit(msg.sender, address(this), _permitAmount, deadline, v, r, s); //update to maxUint
-        _stake(msg.sender, msg.sender, _amount);
+        _stake(msg.sender, _amount);
     }
 
     function stakeForAccount(
-        address _fundingAccount,
         address _account,
         uint256 _amount
     ) external override nonReentrant {
         _validateHandler();
-        _stake(_fundingAccount, _account, _amount);
+        _stake(_account, _amount);
     }
 
     function unstakeForAccount(
         address _account,
-        uint256 _amount,
-        address _receiver
+        uint256 _amount
     ) external override nonReentrant {
         _validateHandler();
-        _unstake(_account, _amount, _receiver);
+        _unstake(_account, _amount);
     }
 
     function transfer(
@@ -180,11 +172,10 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
     }
 
     function claimForAccount(
-        address _account,
-        address _receiver
+        address _account
     ) external override nonReentrant returns (uint256) {
         _validateHandler();
-        return _claim(_account, _receiver);
+        return _claim(_account);
     }
 
     function claimable(
@@ -212,8 +203,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
     }
 
     function _claim(
-        address _account,
-        address _receiver
+        address _account
     ) private returns (uint256) {
         if (stableRewardSystem) {
         _updateRewards(_account);
@@ -223,7 +213,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         claimableReward[_account] = 0;
 
         if (tokenAmount > 0) {
-            IERC20(rewardToken).transfer(_receiver, tokenAmount);
+            IERC20(rewardToken).transfer(_account, tokenAmount);
             emit Claim(_account, tokenAmount);
         }
 
@@ -237,7 +227,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         );
 
         totalSupply = totalSupply.add(_amount);
-        balances[_account] = balances[_account].add(_amount);
+        balance[_account] = balance[_account].add(_amount);
 
         emit Transfer(address(0), _account, _amount);
     }
@@ -248,7 +238,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
             "RewardTracker: burn from the zero address"
         );
 
-        balances[_account] = balances[_account].sub(
+        balance[_account] = balance[_account].sub(
             _amount,
             "RewardTracker: burn amount exceeds balance"
         );
@@ -275,11 +265,11 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
             _validateHandler();
         }
 
-        balances[_sender] = balances[_sender].sub(
+        balance[_sender] = balance[_sender].sub(
             _amount,
             "RewardTracker: transfer amount exceeds balance"
         );
-        balances[_recipient] = balances[_recipient].add(_amount);
+        balance[_recipient] = balance[_recipient].add(_amount);
 
         emit Transfer(_sender, _recipient, _amount);
     }
@@ -308,7 +298,6 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
     }
 
     function _stake(
-        address _fundingAccount,
         address _account,
         uint256 _amount
     ) private {
@@ -316,7 +305,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         
 
         IERC20(depositToken).transferFrom(
-            _fundingAccount,
+            _account,
             address(this),
             _amount
         );
@@ -334,8 +323,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
 
     function _unstake(
         address _account,
-        uint256 _amount,
-        address _receiver
+        uint256 _amount
     ) private {
         require(_amount > 0, "RewardTracker: invalid _amount");
 
@@ -353,7 +341,7 @@ contract RewardTracker is IERC20,IERC20Metadata, ReentrancyGuard, IRewardTracker
         totalDepositSupply[depositToken] = totalDepositSupply[depositToken].sub(_amount);
 
         _burn(_account, _amount);
-        IERC20(depositToken).transfer(_receiver, _amount);
+        IERC20(depositToken).transfer(_account, _amount);
     }
 
     function pendingRewards() public view returns (uint256) {

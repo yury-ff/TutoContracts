@@ -7,22 +7,25 @@ import "./libraries/IERC20.sol";
 import "./libraries/IERC20Metadata.sol";
 import "./libraries/ReentrancyGuard.sol";
 import "./libraries/Ownable.sol";
+import "./libraries/BalancePermit.sol";
+
 
 import "./interfaces/IStableRewardTracker.sol";
 import "./interfaces/IERC20Permit.sol";
+import "./interfaces/IBalancePermit.sol";
 
-contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStableRewardTracker, Ownable {
+
+contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStableRewardTracker, BalancePermit,  Ownable {
     using SafeMath for uint256;
    
     address public stableCoin;
-    address public balanceOracle;
 
     bool public isInitialized;
     bool public inPrivateTransferMode;
     bool public stableRewardSystem;
 
     mapping(address => uint256) public totalDepositSupply;
-    mapping(address => uint256) public balances;
+    mapping(address => uint256) public balance;
     mapping(address => mapping(address => uint256)) public allowances;
     mapping(address => uint256) public override stakedAmounts;
     mapping(address => uint256) public claimableReward;
@@ -39,40 +42,30 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
     uint256 public override totalSupply;
     uint256 public cumulativeRewardPerToken;
 
-    string public name;
-    string public symbol;
-
-    event Claim(address receiver, uint256 amount);
+    event Claim(address account, uint256 amount);
     event TokensPerIntervalChange(uint256 amount);
 
-    constructor(address _initialOwner, string memory _name, string memory _symbol, address _handler) Ownable(_initialOwner) {
-        name = _name;
-        symbol = _symbol;
+    constructor(address _initialOwner, address _handler) Ownable(_initialOwner) BalancePermit("fUsdc") {
         isHandler[_handler] = true;
     }
 
-    function decimals() public view virtual override returns (uint8) {
-    return 6;
+    function decimals() public view virtual override returns (uint8) { 
+        return 6;
     }
 
-    function initialize(address _stableCoin, address _balanceOracle) external onlyOwner {
+    function name() public view virtual override returns (string memory) { 
+        return "Fee USDC Tracker";
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return "fUsdc";
+    }
+
+    function initialize(address _stableCoin) external onlyOwner {
         require(!isInitialized, "RewardTracker: already initialized");
         isInitialized = true;
         stableCoin = _stableCoin;
-        balanceOracle = _balanceOracle;
         inPrivateTransferMode = true;
-    }
-
-    modifier onlyOracle() {
-        require(
-            msg.sender == balanceOracle,
-            "You are not authorized to call this function."
-        );
-        _;
-    }
-
-    function setOracleAddress(address _balanceOracle) external onlyOwner {
-        balanceOracle = _balanceOracle;
     }
 
     function setInPrivateModes(
@@ -96,12 +89,6 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         feeBPS = _newFee;
     }
    
-    function balanceOf(
-        address _account
-    ) external view override returns (uint256) {
-        return balances[_account];
-    }
-
     function stakeWithPermit(
         uint256 _amount,
         uint256 _permitAmount,
@@ -111,25 +98,31 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         bytes32 s
     ) external nonReentrant {
         IERC20Permit(stableCoin).permit(msg.sender, address(this), _permitAmount, deadline, v, r, s); //update to maxUint
-        _stake(msg.sender, msg.sender,  _amount);
+        _stake(msg.sender, _amount);
     }
 
     function stakeForAccount(
-        address _fundingAccount,
         address _account,
         uint256 _amount
     ) external override nonReentrant {
         _validateHandler();
-        _stake(_fundingAccount, _account, _amount);
+        _stake(_account, _amount);
     }
 
     function unstakeForAccount(
         address _account,
+        uint256 _stakedAmount,
         uint256 _amount,
-        address _receiver
+        uint256 _deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
     ) external override nonReentrant {
         _validateHandler();
-        _unstake(_account, _amount, _receiver);
+        withdrawalPermit(owner(), _stakedAmount, _amount, _deadline, v, r, s);
+        balance[_account] = _stakedAmount;
+        stakedAmounts[_account] = _stakedAmount;
+        _unstake(_account, _amount);
     }
 
     function transfer(
@@ -199,11 +192,10 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
     }
 
     function claimForAccount(
-        address _account,
-        address _receiver
+        address _account
     ) external override nonReentrant returns (uint256) {
         _validateHandler();
-        return _claim(_account, _receiver);
+        return _claim(_account);
     }
 
     function claimable(
@@ -231,8 +223,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
     }
 
     function _claim(
-        address _account,
-        address _receiver
+        address _account
     ) private returns (uint256) {
         if (stableRewardSystem) {
         _updateRewards(_account);
@@ -243,7 +234,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         claimableReward[_account] = 0;
 
         if (tokenAmount > 0) {
-            IERC20(stableCoin).transfer(_receiver, tokenAmount);
+            IERC20(stableCoin).transfer(_account, tokenAmount);
             emit Claim(_account, tokenAmount);
         }
 
@@ -257,7 +248,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         );
 
         totalSupply = totalSupply.add(_amount);
-        balances[_account] = balances[_account].add(_amount);
+        balance[_account] = balance[_account].add(_amount);
 
         emit Transfer(address(0), _account, _amount);
     }
@@ -268,7 +259,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
             "RewardTracker: burn from the zero address"
         );
 
-        balances[_account] = balances[_account].sub(
+        balance[_account] = balance[_account].sub(
             _amount,
             "RewardTracker: burn amount exceeds balance"
         );
@@ -295,11 +286,11 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
             _validateHandler();
         }
 
-        balances[_sender] = balances[_sender].sub(
+        balance[_sender] = balance[_sender].sub(
             _amount,
             "RewardTracker: transfer amount exceeds balance"
         );
-        balances[_recipient] = balances[_recipient].add(_amount);
+        balance[_recipient] = balance[_recipient].add(_amount);
 
         emit Transfer(_sender, _recipient, _amount);
     }
@@ -327,26 +318,16 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         require(isHandler[msg.sender], "RewardTracker: forbidden");
     }
 
-    function oracleCallback(
-        address _account,
-        uint256 _stakedAmount,
-        uint256 _amount
-    ) external onlyOracle {
-        stakedAmounts[_account] = _stakedAmount;
-        _unstake(_account, _amount, _account);
-    }
-
-    function oracleCallbackEndDay(
+    function updateStakedAmountsEndDay(
         address[] memory _accounts,
         uint256[] memory _stakedAmounts
-    ) external onlyOracle {
+    ) external onlyOwner {
         for (uint256 i = 0; i < _accounts.length; i++) {
             stakedAmounts[_accounts[i]] = _stakedAmounts[i];
         }
     }
 
     function _stake(
-        address _fundingAccount,
         address _account,
         uint256 _amount
     ) private {
@@ -354,7 +335,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
         
 
         IERC20(stableCoin).transferFrom(
-            _fundingAccount,
+            _account,
             address(this),
             _amount
         );
@@ -373,8 +354,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
 
     function _unstake(
         address _account,
-        uint256 _amount,
-        address _receiver
+        uint256 _amount
     ) private {
         require(_amount > 0, "RewardTracker: invalid _amount");
         
@@ -396,7 +376,7 @@ contract StableRewardTracker is IERC20, IERC20Metadata, ReentrancyGuard, IStable
             .sub(_amount);
 
         _burn(_account, _amount);
-        IERC20(stableCoin).transfer(_receiver, amount);
+        IERC20(stableCoin).transfer(_account, amount);
     }
 
     function _updateRewards(address _account) private {

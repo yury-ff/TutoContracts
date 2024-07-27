@@ -8,34 +8,30 @@ interface IStableRewardTracker {
 
     function updateRewards() external;
 
-     function oracleCallback(
-        address _account,
-        uint256 _stakedAmount,
-        uint256 _amount
-    ) external;
-
-    function oracleCallbackEndDay(
+    function updateStakedAmountsEndDay(
         address[] memory _accounts,
         uint256[] memory _stakedAmounts
     ) external;
 
     function stakeForAccount(
-        address _fundingAccount,
         address _account,
         uint256 _amount
     ) external;
 
     function unstakeForAccount(
         address _account,
+        uint256 _stakedAmount,
         uint256 _amount,
-        address _receiver
+        uint256 _deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
     ) external;
 
     function tokensPerInterval() external view returns (uint256);
 
     function claimForAccount(
-        address _account,
-        address _receiver
+        address _account
     ) external returns (uint256);
 
     function claimable(address _account) external view returns (uint256);

@@ -11,7 +11,7 @@ import "./libraries/Ownable.sol";
 import "./interfaces/IRewardTracker.sol";
 import "./interfaces/IStableRewardTracker.sol";
 import "./interfaces/IRewardRouter.sol";
-import "./interfaces/IBalanceOracle.sol";
+import "./interfaces/IPermitBalanceOracle.sol";
 
 
 contract RewardRouter is ReentrancyGuard, Ownable {
@@ -23,7 +23,6 @@ contract RewardRouter is ReentrancyGuard, Ownable {
     address public usdc;
     address public feeTutoTracker;
     address public feeUsdcTracker;
-    address private balanceOracle;
 
     event StakeTuto(address account, address token, uint256 amount);
     event UnstakeTuto(address account, address token, uint256 amount);
@@ -41,22 +40,12 @@ contract RewardRouter is ReentrancyGuard, Ownable {
 
     function initialize(
         address _feeUsdcTracker,
-        address _feeTutoTracker,
-        address _balanceOracle
+        address _feeTutoTracker
     ) external onlyOwner {
         require(!isInitialized, "RewardRouter: already initialized");
         isInitialized = true;
         feeUsdcTracker = _feeUsdcTracker;
         feeTutoTracker = _feeTutoTracker;
-        balanceOracle = _balanceOracle;
-    }
-
-    modifier onlyOracle() {
-        require(
-            msg.sender == balanceOracle,
-            "You are not authorized to call this function."
-        );
-        _;
     }
 
     // to help users who accidentally send their tokens to this contract
@@ -66,10 +55,6 @@ contract RewardRouter is ReentrancyGuard, Ownable {
         uint256 _amount
     ) external onlyOwner {
         IERC20(_token).transfer(_account, _amount);
-    }
-
-    function setOracleAddress(address _balanceOracle) external onlyOwner {
-        balanceOracle = _balanceOracle;
     }
 
     function stakeTuto(uint256 _amount) external nonReentrant {
@@ -84,8 +69,8 @@ contract RewardRouter is ReentrancyGuard, Ownable {
         _depositUsdc(msg.sender, _amount);
     }
 
-    function withdrawUsdc(uint256 _amount) external nonReentrant {
-        _withdrawUsdc(msg.sender, _amount);
+    function withdrawUsdc(uint256 _stakedAmount, uint256 _amount, uint256 _deadline, uint8 v, bytes32 r, bytes32 s) external nonReentrant {
+        _withdrawUsdc(msg.sender, _stakedAmount, _amount, _deadline, v, r, s);
     }
 
     function handleRewards(
@@ -96,12 +81,8 @@ contract RewardRouter is ReentrancyGuard, Ownable {
             
         uint256 usdcAmount = 0;
         if (_shouldClaimUsdc) {
-            uint256 usdcAmount0 = IRewardTracker(feeTutoTracker).claimForAccount(
-                account,
-                account
-            );
-            uint256 usdcAmount1 = IRewardTracker(feeUsdcTracker)
-                .claimForAccount(account, account);
+            uint256 usdcAmount0 = IRewardTracker(feeTutoTracker).claimForAccount(account);
+            uint256 usdcAmount1 = IStableRewardTracker(feeUsdcTracker).claimForAccount(account);
             usdcAmount = usdcAmount0 + usdcAmount1;
         }
         if (_shouldDepositUsdc && usdcAmount > 0) {
@@ -111,8 +92,8 @@ contract RewardRouter is ReentrancyGuard, Ownable {
 
     function claim() external nonReentrant {
         address account = msg.sender;
-        IRewardTracker(feeTutoTracker).claimForAccount(account, account);
-        IRewardTracker(feeUsdcTracker).claimForAccount(account, account);
+        IRewardTracker(feeTutoTracker).claimForAccount(account);
+        IStableRewardTracker(feeUsdcTracker).claimForAccount(account);
     }
 
     function compound() external nonReentrant {
@@ -131,12 +112,11 @@ contract RewardRouter is ReentrancyGuard, Ownable {
 
     function _compoundUsdc(address _account) private {
         uint256 usdcFeeAmount0 = IRewardTracker(feeTutoTracker).claimForAccount(
-                _account,
                 _account
             );
 
         uint256 usdcFeeAmount1 = IStableRewardTracker(feeUsdcTracker)
-            .claimForAccount(_account, _account);
+            .claimForAccount(_account);
 
         uint256 usdcFeeAmount = usdcFeeAmount0 + usdcFeeAmount1;
 
@@ -151,15 +131,20 @@ contract RewardRouter is ReentrancyGuard, Ownable {
     ) private {
         require(_amount > 0, "RewardRouter: invalid _amount");
 
-        IStableRewardTracker(feeUsdcTracker).stakeForAccount(_account, _account, _amount);
+        IStableRewardTracker(feeUsdcTracker).stakeForAccount(_account, _amount);
 
         emit DepositUsdc(_account, _amount);
     }
 
-    function _withdrawUsdc(address _account, uint256 _amount) private {
-        IBalanceOracle(balanceOracle).updateUserBalance(
-            _account,
-            _amount
+    function _withdrawUsdc(address _account, uint256 _stakedAmount, uint256 _amount, uint256 _deadline, uint8 v, bytes32 r, bytes32 s) private {
+        IStableRewardTracker(feeUsdcTracker).unstakeForAccount(
+        _account,
+        _stakedAmount,
+        _amount,
+        _deadline,
+        v,
+        r,
+        s
         );
        emit WithdrawUsdc(_account, _amount);
     }
@@ -171,7 +156,6 @@ contract RewardRouter is ReentrancyGuard, Ownable {
         require(_amount > 0, "RewardRouter: invalid _tutoAmount");
 
         IRewardTracker(feeTutoTracker).stakeForAccount(
-            _account,
             _account,
             _amount
         );
@@ -187,8 +171,7 @@ contract RewardRouter is ReentrancyGuard, Ownable {
 
         IRewardTracker(feeTutoTracker).unstakeForAccount(
             _account,
-            _amount,
-            _account
+            _amount
         );
         emit UnstakeTuto(_account, tuto, _amount);
     }
